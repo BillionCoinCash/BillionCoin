@@ -1,0 +1,244 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+/**
+ * @title IBEP20
+ * @dev Interface for BEP-20 contracts.
+ */
+interface IBEP20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address recipient, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+/**
+ * @title IPancakeRouter
+ * @dev Interface for PancakeSwap router.
+ */
+interface IPancakeRouter {
+    function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        payable
+        returns (uint[] memory amounts);
+    function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+        external
+        returns (uint[] memory amounts);
+}
+
+/**
+ * @title TaxRecipient
+ * @dev Contract for distributing transaction fees and holder rewards.
+ */
+contract TaxRecipient {
+    address public liquidityWallet; // Liquidity wallet
+    address public marketingWallet; // Marketing wallet
+    bool public lpLocked = true; // Liquidity lock flag
+    mapping(address => uint256) public balances; // Holder balances
+    mapping(address => uint256) public rewards; // Holder rewards
+    address[] public holders; // List of holders
+
+    event TaxReceived(uint256 amount);
+
+    /**
+     * @dev Constructor to set liquidity and marketing wallets.
+     * @param _liquidityWallet Address of the liquidity wallet.
+     * @param _marketingWallet Address of the marketing wallet.
+     */
+    constructor(address _liquidityWallet, address _marketingWallet) {
+        liquidityWallet = _liquidityWallet;
+        marketingWallet = _marketingWallet;
+    }
+
+    /**
+     * @dev Function to receive fees and distribute them to liquidity, marketing wallets, and holder rewards.
+     * @param amount Amount of fees received.
+     */
+    function receiveTax(uint256 amount) external {
+        // Process 3% for liquidity
+        uint256 liquidityAmount = (amount * 3) / 100;
+        // Process 2% for marketing
+        uint256 marketingAmount = (amount * 2) / 100;
+        // Calculate remaining amount after deductions
+        uint256 remainingAmount = amount - liquidityAmount - marketingAmount;
+        // Transfer to liquidity wallet
+        IBEP20(address(this)).transfer(liquidityWallet, liquidityAmount);
+        // Transfer to marketing wallet
+        IBEP20(address(this)).transfer(marketingWallet, marketingAmount);
+        // Distribute remaining amount as holder rewards
+        distributeRewards(remainingAmount);
+        emit TaxReceived(amount);
+    }
+
+    /**
+     * @dev Function to distribute holder rewards.
+     * @param amount Amount of rewards to distribute.
+     */
+    function distributeRewards(uint256 amount) internal {
+        // Iterate through holders and distribute rewards based on their balances
+        for (uint256 i = 0; i < holders.length; i++) {
+            address holder = holders[i];
+            uint256 reward = (amount * balances[holder]) / IBEP20(address(this)).totalSupply();
+            rewards[holder] += reward;
+        }
+    }
+
+    /**
+     * @dev Function to update holder balances.
+     * @param holder Holder's address.
+     * @param balance New balance of the holder.
+     */
+    function updateBalance(address holder, uint256 balance) external {
+        balances[holder] = balance;
+        if (balance > 0) {
+            if (balances[holder] == 0) {
+                holders.push(holder);
+            }
+        } else {
+            for (uint256 i = 0; i < holders.length; i++) {
+                if (holders[i] == holder) {
+                    holders[i] = holders[holders.length - 1];
+                    holders.pop();
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/**
+ * @title BillionCoin
+ * @dev Main contract for BillionCoin.
+ */
+contract BillionCoin is IBEP20 {
+    uint256 private constant TOTAL_SUPPLY = 200_000_000 ether; // 200 million tokens
+    uint8 private constant DECIMALS = 18;
+    string private constant NAME = "BillionCoin";
+    string private constant SYMBOL = "BNC";
+    mapping(address => uint256) private _balances; // Balance of each account
+    mapping(address => mapping(address => uint256)) private _allowances; // Transfer allowances
+    TaxRecipient private _taxRecipient; // Fee distribution contract
+    uint256 private _lastBurnTime; // Last burn time
+    uint256 private constant BURN_DURATION = 14 years; // 14-year burn duration
+    uint256 private constant BURN_RATE = 20; // 20% burn rate per year
+    address private _pancakeRouter = 0x10ED43C718714eb63d5aA57B78B54704E256024E; // PancakeSwap router address
+    address private _bnbAddress = 0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c; // BNB token address
+
+    event TokensBurned(address indexed burner, uint256 amount);
+
+    /**
+     * @dev Constructor to initialize the contract with initial supply and wallets.
+     * @param _marketingWallet Address of the marketing wallet.
+     * @param _liquidityWallet Address of the liquidity wallet.
+     */
+    constructor(address _marketingWallet, address _liquidityWallet) {
+        _balances[msg.sender] = TOTAL_SUPPLY;
+        _taxRecipient = new TaxRecipient(_liquidityWallet, _marketingWallet);
+        _lastBurnTime = block.timestamp;
+        emit Transfer(address(0), msg.sender, TOTAL_SUPPLY);
+
+        // Start the timer for automatic operations
+        startTimer();
+    }
+
+    // Implement BEP-20 standard functions...
+
+    /**
+     * @dev Function to start the timer for automatic operations.
+     */
+    function startTimer() private {
+        // Execute the timer every day (86400 seconds)
+        uint256 timerInterval = 86400;
+        // Start the timer
+        timer(timerInterval);
+    }
+
+    /**
+     * @dev Internal function to execute the timer.
+     * @param interval Time interval for the next timer call.
+     */
+    function timer(uint256 interval) private {
+        // Schedule the next timer call
+        uint256 nextCallTime = block.timestamp + interval;
+        // Call the timer callback function after the interval
+        timerCallback{value: 0.01 ether}(nextCallTime, interval);
+    }
+
+    /**
+     * @dev Callback function to be called after the timer interval.
+     * @param nextCallTime Next timer call time.
+     * @param interval Time interval for the next timer call.
+     */
+    function timerCallback(uint256 nextCallTime, uint256 interval) private {
+        // Execute automatic operations here
+        _burnTokens(); // Burn tokens according to burn rate
+        // Reschedule the timer
+        if (block.timestamp < nextCallTime) {
+            timer(nextCallTime - block.timestamp);
+        } else {
+            timer(interval);
+        }
+    }
+
+    /**
+     * @dev Function to burn tokens based on the burn rate.
+     */
+    function _burnTokens() private {
+        uint256 currentTime = block.timestamp;
+        uint256 timeDifference = currentTime - _lastBurnTime;
+        uint256 tokensToBurn = 0;
+
+        if (timeDifference >= 1 years) {
+            uint256 elapsedYears = timeDifference / 1 years;
+            for (uint256 i = 0; i < elapsedYears; i++) {
+                if (block.timestamp <= _lastBurnTime + BURN_DURATION) {
+                    // Burn tokens for the first 14 years
+                    tokensToBurn = TOTAL_SUPPLY * BURN_RATE / 100;
+                    _totalSupply -= tokensToBurn;
+                    emit TokensBurned(address(this), tokensToBurn);
+                }
+            }
+            _lastBurnTime = currentTime;
+        }
+    }
+
+    /**
+     * @dev Function to buy tokens using BNB and burn them.
+     * @param amountToBuy Amount of BNB to swap for tokens and burn.
+     */
+    function buyAndBurnTokens(uint256 amountToBuy) public payable {
+        // Ensure the contract has enough BNB for the purchase
+        require(msg.value >= amountToBuy, "Insufficient BNB sent");
+
+        // Swap BNB for tokens using PancakeSwap router
+        address[] memory path = new address[](2);
+        path[0] = _bnbAddress;
+        path[1] = address(this);
+
+        // Approve PancakeSwap router to spend BNB
+        IBEP20(_bnbAddress).approve(_pancakeRouter, amountToBuy);
+
+        // Perform the swap
+        IPancakeRouter(_pancakeRouter).swapExactETHForTokens{value: amountToBuy}(0, path, address(this), block.timestamp);
+
+        // Burn the purchased tokens
+        _burnTokens(amountToBuy);
+    }
+
+    /**
+     * @dev Function to burn tokens.
+     * @param amount Amount of tokens to burn.
+     */
+    function _burnTokens(uint256 amount) private {
+        require(amount > 0, "Amount must be greater than zero");
+        require(amount <= _balances[address(this)], "Insufficient balance for burning");
+
+        _balances[address(this)] -= amount;
+        emit Transfer(address(this), address(0), amount);
+        emit TokensBurned(address(this), amount);
+    }
+}
